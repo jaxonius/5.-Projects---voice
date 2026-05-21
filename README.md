@@ -8,7 +8,7 @@ Always-on voice assistant for a Mac mini. No keyboard, no mouse, no clicks.
 - **`computer, dictate`** — enters dictation mode; everything you say gets pasted at the cursor.
 - **`stop dictating`** — returns to command mode.
 
-Local-only: Whisper runs on-device, no audio leaves the machine.
+Whisper runs on-device — audio never leaves the machine. Novel commands ("fire up Resolve", "quit Slack", "the video editor") can optionally fall back to Claude Haiku for intent extraction.
 
 ## Setup (Mac mini, Apple Silicon)
 
@@ -36,8 +36,18 @@ You'll get prompted on first use of each.
 1. Mic streams continuously into a WebRTC VAD.
 2. VAD segments speech into utterances (~150ms voiced → start, ~750ms silence → end).
 3. Each utterance is transcribed locally by `faster-whisper` (small.en, int8 on CPU).
-4. **Command mode** (default): transcript must start with `computer`. Verbs handled: `pull up`, `open`, `launch`, `start`, `switch to`, plus `dictate` to switch modes.
-5. **Dictation mode**: each utterance is copied to clipboard and pasted via Cmd+V into the focused field. Exits on `stop dictating` / `end dictation` / `done dictating`.
+4. **Command mode** (default): transcript must start with `computer`. Verbs handled locally: `pull up`, `open`, `launch`, `start`, `switch to`, plus `dictate` to switch modes.
+5. **Claude fallback** (optional): if the local pattern doesn't match and `ANTHROPIC_API_KEY` is set, the transcript is sent to Claude Haiku 4.5 with a closed schema (`open_app`, `close_app`, `focus_app`, `start_dictation`, `stop_dictation`, `none`). The result is dispatched the same way as a local match.
+6. **Dictation mode**: each utterance is copied to clipboard and pasted via Cmd+V into the focused field. Exits on `stop dictating` / `end dictation` / `done dictating`.
+
+## Enabling the Claude fallback
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python dictate.py
+```
+
+Without the env var, fallback is disabled and unmatched commands log `no match`. Cost is a few cents per day at typical use — Haiku 4.5 is $1/$5 per 1M tokens, and each call is ~500 tokens.
 
 ## Adding apps
 
@@ -47,7 +57,7 @@ Edit `apps.json` to map a spoken phrase → an installed app name (the same name
 
 - v1.1: menu-bar indicator (rumps) showing current mode.
 - v1.2: voice-driven alias learning ("computer, learn app Figma").
-- v2: Claude API fallback for novel commands ("draft a reply to the last email").
+- v2: free-form Claude actions beyond the closed schema ("draft a reply to the last email").
 - v2: context-aware dictation (code formatting in terminal, prose in Notion).
 - v2: custom vocabulary biasing via Whisper's `initial_prompt` (Offframe, Janelle, Sebastian, TPx).
 

@@ -30,6 +30,8 @@ import webrtcvad
 from faster_whisper import WhisperModel
 from pynput import keyboard
 
+from claude_fallback import ClaudeFallback
+
 SAMPLE_RATE = 16_000
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 480 samples per frame
@@ -88,6 +90,7 @@ class App:
         print(f"loading whisper ({MODEL_NAME})...", flush=True)
         self.model = WhisperModel(MODEL_NAME, device="auto", compute_type="int8")
         self.aliases = load_aliases()
+        self.fallback = ClaudeFallback(self.aliases)
         self.segmenter = VADSegmenter()
         self.mode = "command"
         self.kbd = keyboard.Controller()
@@ -123,24 +126,59 @@ class App:
         self._paste(text.strip() + " ")
 
     def _handle_command(self, text: str) -> None:
-        cleaned = re.sub(r"^[^\w]+", "", text.lower())
-        if not cleaned.startswith(WAKE_WORD):
+        match = re.match(
+            r"^[\W_]*" + WAKE_WORD + r"\b[\s,.:!-]*", text, re.IGNORECASE
+        )
+        if not match:
             return
-        remainder = cleaned[len(WAKE_WORD):].lstrip(" ,.:-")
-        if not remainder:
-            return
-        self._dispatch(remainder.rstrip(".!?,"))
+        remainder = text[match.end():].strip().rstrip(".!?,")
+        if remainder:
+            self._dispatch(remainder)
 
     def _dispatch(self, command: str) -> None:
-        if command in ("dictate", "start dictating", "start dictation", "begin dictation"):
+        lower = command.lower()
+        if lower in ("dictate", "start dictating", "start dictation", "begin dictation"):
             self.mode = "dictation"
             print("-> entered dictation", flush=True)
             return
         for verb in ("pull up ", "open ", "launch ", "start ", "switch to "):
-            if command.startswith(verb):
+            if lower.startswith(verb):
                 self._open_app(command[len(verb):].strip())
                 return
-        print(f"-> no match: {command!r}", flush=True)
+        action = self.fallback.interpret(command)
+        if action is None:
+            print(f"-> no match: {command!r}", flush=True)
+            return
+        self._execute_action(action, command)
+
+    def _execute_action(self, action: dict, original: str) -> None:
+        kind = action.get("action")
+        if kind in ("open_app", "focus_app"):
+            target = action.get("app", "")
+            if target:
+                self._open_app(target)
+            else:
+                print(f"-> {kind} with no app: {original!r}", file=sys.stderr)
+        elif kind == "close_app":
+            target = action.get("app", "")
+            resolved = self.aliases.get(target.lower(), target)
+            if not resolved:
+                print(f"-> close_app with no app: {original!r}", file=sys.stderr)
+                return
+            subprocess.run(
+                ["osascript", "-e", f'tell application "{resolved}" to quit'],
+                capture_output=True,
+            )
+            print(f"-> quit {resolved}", flush=True)
+        elif kind == "start_dictation":
+            self.mode = "dictation"
+            print("-> entered dictation (via fallback)", flush=True)
+        elif kind == "stop_dictation":
+            print("-> already in command mode", flush=True)
+        elif kind == "none":
+            print(f"-> Claude declined: {action.get('reason', '')}", flush=True)
+        else:
+            print(f"-> unknown action: {action!r}", file=sys.stderr)
 
     def _open_app(self, target: str) -> None:
         app_name = self.aliases.get(target.lower(), target.title())
